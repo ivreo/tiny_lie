@@ -1,0 +1,19 @@
+[project]
+name = "tiny-lie"
+version = "0.1.0"
+description = "Educational from-scratch SO(3) rotations Lie group (matrices and unit quaternions) for SLAM"
+readme = "README.md"
+authors = [
+    { name = "Ives REY OTERO", email = "ives.rey.otero@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.4.6",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.168.1",
+    "matplotlib>=3.11.2",
+    "pytest>=9.1.1",
+]
