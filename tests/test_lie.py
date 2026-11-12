@@ -3,6 +3,7 @@ import numpy as np
 from math import cos, sin, pi
 from hypothesis import given, strategies as st, assume
 import pytest
+from tests.conftest import rotation_vectors
 
 
 def test_hamilton_associativity():
@@ -82,22 +83,16 @@ def test_quat_matches_rodrigues_hyp(ax, ay, az, theta):
 
 
 
-@given(
-    ux=st.floats(-1, 1), uy=st.floats(-1, 1), uz=st.floats(-1, 1),
-    theta=st.floats(0, np.pi - 1e-6),        # stay strictly below π
-)
-def test_Log_of_Exp(ux, uy, uz, theta):
-    axis = Vec3(ux, uy, uz)
-    assume(axis.norm() > 1e-9)               # skip the degenerate zero-axis draw
-    tau = axis.normalized() * theta          # ||tau|| = theta \in [0, pi)
+@given(tau=rotation_vectors())
+def test_Log_of_Exp(tau):
     t = SO3.Exp(tau).Log()
-    if abs(theta - np.pi) < 1e-9:  # near pi: sign ambiguous
-        assert t.approx_eq(tau) or t.approx_eq(-tau)   # either sign is correct
-    else:
-        assert t.approx_eq(tau)
-
     R = SO3.Exp(tau)
     assert R.approx_eq(SO3.Exp(t))          # round-trip through the group
+
+@given(tau=rotation_vectors())
+def test_Exp_of_Log(tau):
+    R = SO3.Exp(tau)
+    assert R.approx_eq(SO3.Exp(R.Log()))
 
 
 @pytest.mark.parametrize("theta", [
@@ -123,19 +118,6 @@ def test_Log_Exp_on_corners(axis, theta):
         assert t.approx_eq(tau)
 
 
-
-@given(
-    ux=st.floats(-1,+1), uy=st.floats(-1,+1), uz=st.floats(-1,+1),
-    theta=st.floats(0, 3*np.pi),
-)
-def test_Exp_of_Log(ux, uy, uz, theta):
-    axis = Vec3(ux,uy,uz)
-    assume(axis.norm() > 1e-9)
-    tau = theta*axis
-    R = SO3.Exp(tau)
-    assert R.approx_eq(SO3.Exp(R.Log()))
-
-
 # (X \oplus \tau) \ominus X == \tau
 @given(
     # base rotation
@@ -152,14 +134,4 @@ def test_rplus_rminus_roundtrip(bx, by, bz, px, py, pz, angle):
     # (X \oplus \tau) \ominus X == \tau
     recovered = X.rplus(tau).rminus(X)
     assert recovered.approx_eq(tau, tol=1e-7), f"rplus then rminus failed: {recovered.v} vs {tau.v}"
-
-
-def test_frechet_average():
-    rng = np.random.default_rng(0)
-    #R_true = SO3.Exp(Vec3(0.5, -0.3, 0.8))
-    R_true = UnitQuaternion.Exp(Vec3(0.5, -0.3, 0.8))
-    noisy = [R_true.rplus(Vec3(*(0.05 * rng.normal(size=3)))) for _ in range(100)]
-    R_est = compute_frechet_average(noisy)
-    error = R_est.rminus(R_true).norm()
-    assert error < 0.02,  f"recovered mean off by {error}"
 

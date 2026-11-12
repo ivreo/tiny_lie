@@ -22,6 +22,9 @@ class Vec3:
     def z(self):
         return self.v[2]
 
+    def to_numpy(self) -> np.ndarray:
+        return self.v.copy()
+
     # called when vec*s
     def __mul__(self, s: float) -> Vec3:
         return Vec3(*(self.v*s))
@@ -200,7 +203,9 @@ class SO3:
 
     def __init__(self, R: np.ndarray):
         self._R = R
-        # something to verify it's an actual rotation matrix?
+
+    def to_matrix(self) -> np.ndarray:
+        return self._R.copy()
 
     def __mul__(self, other):
         return SO3(self._R @ other._R)
@@ -219,6 +224,21 @@ class SO3:
 
     @classmethod
     def Exp(cls, tau: Vec3) -> SO3:
+        """ Exponential map  R^3 -> SO(3):  rotation vector -> rotation.
+
+            Takes tau = theta * u (unit axis u, angle theta = ||tau||) and returns
+            the rotation by theta around u:
+
+                R = Exp(tau) = exp(hat(tau))
+
+            with hat(tau) the skew-symmetric matrix, element of so(3), the Lie algebra of SO(3)
+
+            Closed form via the Rodrigues formula:
+
+                R  = I + sin(theta) hat(u) + (1 - cos(theta)) hat(u)^2
+
+            Inverse of Log.  Exp(0) = identity. Exp is many-to-one
+        """
         angle = tau.norm()
         I = np.eye(3)
         if angle < EPS:
@@ -235,35 +255,137 @@ class SO3:
         return cls(R)
 
     def Log(self) -> Vec3:
+        """ Logarithmic map SO(3) ->  R^3: rotation -> rotation vector
+
+            Returns a rotation vector tau = theta * u, such that Exp(tau) == self.
+
+            Principal value: theta in [0, pi], the smallest rotation that
+            reaches self.
+
+            note: At theta = pi the axis sign is ambiguous.
+
+            algo: uses the particular structure of R (as visible in the Rodrigues formula)
+            to recover the angle and the axis.
+
+            Inverse of Exp (up to 2pi periodicity).
+        """
         t = self.vee(self._R-self._R.T)/2
-        sinA = t.norm()  # assuming sinA >= 0 w.l.g.
+        sinA = t.norm()  # forces angle in [0,pi].
         cosA = (self._R.trace()-1)/2
-        angle = math.atan2(sinA, cosA)
+        angle = math.atan2(sinA, cosA) # more numerically stable
         if angle < EPS:
+            # angle/sinA -> 1 as angle -> 0
             tau = t
-        elif EPS < angle < math.pi-EPS:
+        elif EPS <= angle < math.pi-EPS:
             tau = angle/sinA*t
         else: # angle ~ pi
-            A = (self._R + np.eye(3))/2  # ~= u @ u^T
+            # Rodrigues reduces to R = I + 0 + 2* hat(u)*hat(u)
+            # Using hat(u)*hat(u) = u * u^T - I
+            # u* u^T = (R+I)/2
+            A = (self._R + np.eye(3))/2 
+            # Any column would do for the axis
+            # we pick the one with largest norm for stability
             max_idx = np.argmax(np.diag(A))
-            u = A[:,max_idx]/sqrt(A[max_idx, max_idx])
+            u = A[:,max_idx]/np.sqrt(A[max_idx, max_idx])
             tau = angle * Vec3(*u)
         return tau
 
-
     def rplus(self, tau: Vec3) -> SO3:
-        return self * SO3.Exp(tau)   # R o Exp(tau), R cirlePlus tau
+        ''' Right box-plus: the result of applying an increment to the rotation 'self'
+
+            returns the rotation reached by applying a small
+            rotation increment on the RIGHT of self (i.e. in its own body/local frame).
+
+              Y = R [+]_R tau = R o Exp(tau)
+
+            Inverse of rminus: self.rplus(tau).rminus(self) == tau.
+        '''
+        return self * SO3.Exp(tau)
 
     def rminus(self, other: SO3) -> Vec3:
+        """ Right box-minus: the body-frame increment from 'other' to 'self'.
+
+             returns the tangent vector tau such that
+
+                self = other [+]_R tau = other o Exp(tau)   
+                # tau = Log(inv(other) o self)
+
+             i.e. the small rotation that, applied on the RIGHT of `other`
+             (i.e. in its own body/local frame), turns `other` into `self`.
+
+             The result lives in the tangent space based at `other`;
+             tau -> 0 as self -> other.
+
+             Inverse of rplus:  other.rplus(self.rminus(other)) == self.
+        """
         return (other.inverse() * self).Log()
-        # returns the local-frame tangent
-        #    at 'other' that reaches 'self'
-        # convention:
-        #  - self is the left operand
-        #  - Y circleMinus X
-        #    Y[self].rminus(X[other])
-        #    Log (Xinv o Y)
-        #    Log(other.inv * self)
+
+    @classmethod
+    def left_jacobian(cls, tau: Vec3) -> np.ndarray:
+        """ Left Jacobian J_l(tau) of SO(3) 
+
+            J_l is the Jacobian around 0 of the R^3 -> R^3 function
+
+                g(e) = Exp(tau+e) [-]_L Exp(tau)   (i.e. Exp(tau+e) = g(e) [+]_L Exp(tau))
+            
+            i.e. the 3x3 matrix in first order approximation
+
+                g(e) ~= J_l @ e + O(||e||^2)
+
+            Closed form:
+
+                J_l = I + (1-cos t)/t^2 [tau]_x + (t-sin t)/t^3 [tau]_x^2 ,   t = ||tau||
+
+        """
+        t = tau.norm()  # angle
+        Phi = cls.hat(tau)
+        I = np.eye(3)
+        if t < EPS:                        # 0/0 in the coefficients as t -> 0
+            a = 0.5 - t*t/24.0             # (1-cos t)/t^2  -> 1/2 - t^2/24
+            b = 1.0/6.0 - t*t/120.0        # (t-sin t)/t^3  -> 1/6 - t^2/120
+        else:
+            a = (1.0 - math.cos(t)) / (t*t)
+            b = (t - math.sin(t)) / (t**3)
+        return I + a*Phi + b*(Phi @ Phi)
+
+    @classmethod
+    def left_jacobian_inv(cls, tau: Vec3) -> np.ndarray:
+        """Inverse left Jacobian J_l^{-1}(theta) of SO(3)
+
+            Closed form:
+
+            J_l^{-1} = I - 1/2 [tau]_x
+                         + ( 1/t^2 - (1+cos t)/(2 t sin t) ) [tau]_x^2 ,   t = ||tau||
+
+            note on how to derive it:
+                Cayley-Hamilton gives [tau]_x^3 = -t^2 [tau]_x, so the algebra
+                generated by [tau]_x closes: {I, [tau]_x, [tau]_x^2} is a basis.
+                Hence J_l and J_l^{-1} are both of the form a I + b [tau]_x + c [tau]_x^2.
+                Assume that shape for J_l^{-1}, impose J_l J_l^{-1} = I, match coefficients.
+        """
+        t = tau.norm()
+        Phi = cls.hat(tau)
+        I = np.eye(3)
+        if t < EPS:                        # 1/t^2 - (1+cos t)/(2 t sin t) -> 1/12 + t^2/720
+            c = 1.0/12.0 + t*t/720.0
+        else:
+            c = 1.0/(t*t) - (1.0 + math.cos(t)) / (2.0*t*math.sin(t))
+        return I - 0.5*Phi + c*(Phi @ Phi)
+
+    @classmethod
+    def right_jacobian(cls, tau: Vec3) -> np.ndarray:
+        """Right Jacobian J_r(theta) of SO(3)
+            J_r = J_l^T
+        """
+        return cls.left_jacobian(tau).T
+
+    @classmethod
+    def right_jacobian_inv(cls, tau: Vec3) -> np.ndarray:
+        """Inverse right Jacobian J_r^{-1}(theta) of SO(3)
+            J_r^{-1} = J_l^{-1}^T
+        """
+        return cls.left_jacobian_inv(tau).T
+
 
     @classmethod
     def from_axis_angle(cls, axis: Vec3, theta: float) -> SO3:
@@ -271,6 +393,9 @@ class SO3:
 
     def inverse(self) -> SO3:
         return SO3(self._R.T)
+
+    def rotate(self, p: Vec3) -> Vec3:
+        return Vec3(*(self._R @ p.v))
 
     def approx_eq_by_action(self, other: SO3, tol=1e-9) -> bool:
         for e in (Vec3(1,0,0), Vec3(0,1,0), Vec3(0,0,1)):
