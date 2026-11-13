@@ -1,7 +1,7 @@
 import numpy as np
 import hypothesis.strategies as st
 from hypothesis import assume
-from lie import Vec3
+from lie import Vec3, SE3Tangent
 
 @st.composite
 def rotation_vectors(draw, max_angle=np.pi - 1e-3) -> Vec3:
@@ -21,3 +21,19 @@ def rotation_vectors(draw, max_angle=np.pi - 1e-3) -> Vec3:
     u = axis.normalized()
     return theta*u
     # TODO this sampling is not uniform on a ball
+
+
+@st.composite
+def se3_tangents(draw, max_angle=np.pi - 1e-3, max_translation=10.0) -> SE3Tangent:
+    """ Random se(3) tangent xi = (rho, theta)
+
+        rho: translation part, in [-max_translation, +max_translation]
+        theta: rotation part, rotation vector ||theta|| in [0, max_angle]
+
+    """
+    m = max_translation
+    rho = Vec3(draw(st.floats(-m, m)),
+               draw(st.floats(-m, m)),
+               draw(st.floats(-m, m)))
+    theta = draw(rotation_vectors(max_angle=max_angle))
+    return SE3Tangent(rho, theta)
