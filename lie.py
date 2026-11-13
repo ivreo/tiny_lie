@@ -563,7 +563,57 @@ class SE3:
         rho = Vec3(*(Vinv @ self._t.to_numpy()))
         return SE3Tangent(rho, theta)
 
+    def act(self, p: Vec3) -> Vec3:
+        return self._R.rotate(p) + self._t
+        ## TODO  - consider overloading operator mul for SE3 * Vec3  (Sophus does that)
+
+    def rplus(self, xi: SE3Tangent) -> SE3:
+        return self * SE3.Exp(xi)                    # self [+]_R xi
+
+    def rminus(self, other: SE3) -> SE3Tangent:
+        return (other.inverse() * self).Log()        # Log(other^-1 self)
+
+    def adjoint(self) -> np.ndarray: # (6,6)
+        """ Adjoint matrix
+
+            The adjoint Adj is the tool to move tangent space quantities across a group element:
+            A Lie group element T relates two frames, and Ad_T is the induced linear map
+            on the tangent space that relates how first-order quantities are expressed in those two frames.
 
 
+                Adj(xi) = xi'
+
+                   with xi, xi' in se(3) 
+
+                   such that    xi' [+]_L T = T [+]_R xi
+                               Exp(xi') o T = T o Exp(xi)
+                              exp(hat(xi')) = T exp(hat(xi)) T^-1
+                                   hat(xi') = T hat(xi) T^-1   (aka "conjugation")
+
+                TODO: add here generic representation of a tangent vector (diff geometry)
+
+                Both xi and xi' are two coordinate representations of the **same** tangent vector at T (the same increment/perturbations).
+
+                xi is its body-frame coordinate representation:      T   [+]_R  xi (right perturbation, left trivialization)
+                xi' is its global-frame coordinate representation:   xi' [+]_L  T  (left perturbation, right trivialization)
+
+                Ad is the change of coordinate matrix
+
+            Returns Ad the 6x6 matrix Ad of the linear map induced by Adj
+
+                xi' = Ad * xi
+
+                    =  [ R  [t]_x*R  * [rho
+                         O     R   ]    theta]
+
+            TODO : note on derivation
+        """
+        Ad = np.zeros((6,6))
+        R = self._R.to_matrix()
+        tx = SO3.hat(self._t)  #[t]_x , skew symmetric matrix
+        Ad[:3,:3] = R
+        Ad[3:,3:] = R
+        Ad[:3,3:] = tx @ R
+        return Ad
 
 
