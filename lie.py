@@ -23,7 +23,7 @@ class Vec3:
         return self.v[2]
 
     def to_numpy(self) -> np.ndarray:
-        return self.v.copy()
+        return self.v.copy()  # (3,)
 
     # called when vec*s
     def __mul__(self, s: float) -> Vec3:
@@ -418,14 +418,150 @@ def compute_frechet_average(rots: list[SO3], iters: int =20) -> SO3:
     return mu
 
 
+#  SE3 representation: a rotation + translation pair — (SO3, Vec3) (or quaternion + Vec3), or a 4×4 matrix. The pair is cleaner.
+#  se(3) hat/vee: ξ = (ρ, θ) ∈ R^6, hat(ξ) = [[Φ, ρ], [0, 0]].
+#  SE3.Exp(ξ): rotation R = SO3.Exp(θ), translation t = V ρ where V = left_jacobian(θ) — you already have it.
+#  SE3.Log(T): θ = R.Log(), ρ = V^{-1} t where V^{-1} = left_jacobian_inv(θ) — also already have it.
+#  Round-trip test Log(Exp(ξ)) == ξ, same shape as your SO(3) one.
+
+
+class SE3Tangent:
+    """ SE3Tangent represents an element of se(3), the Lie algebra of SE(3).
+
+        While se(3) is formally a set of 4x4 matrices hat(xi); 
+        here we store the element by its R^6 coordinates xi = vee(hat(xi)).
+
+            xi = (rho, theta)
+
+        with rho : translation
+             theta : rotation    (cf Fig 7.2 in Barfoot)
+
+        Elements of se(3) are also called "twists".
+    """
+    def __init__(self, rho: Vec3, theta: Vec3):
+        self._rho = rho
+        self._theta = theta
+
+    @property
+    def rho(self) -> Vec3: return self._rho
+
+    @property
+    def theta(self) -> Vec3: return self._theta
+
+    def to_numpy(self) -> np.ndarray:
+        """ Returns an element of tangent space se(3) as a (6,) numpy array
+        """
+        return np.concatenate([self._rho.to_numpy(), self._theta.to_numpy()])
+
+    @classmethod
+    def from_numpy(cls, xi: np.ndarray) -> SE3Tangent:
+        """ Constucts an element of se(3) from a (6,) numpy array
+
+            Assumes structure xi = (rho, theta)
+            with   rho : translation
+                 theta : rotation    (cf Fig 7.2 in Barfoot)
+        """
+        rho = Vec3(*xi[:3])
+        theta = Vec3(*xi[3:])
+        return cls(rho, theta)
+
+    def hat(self) -> np.ndarray:
+        """se(3) element xi^ (4x4) of this tangent:
+
+            xi^ = [[ [theta]_x,  rho ],
+                   [   0  0  0,    0  ]]
+
+            Used just for a test: Exp closed form compared to matrice exponential
+
+        TODO HARMONIZE):
+            - for SE3, hat is a method SE3Tangent
+            - for SO3, hat is a static method of SO3
+        """
+        M = np.zeros((4, 4))
+        M[:3, :3] = SO3.hat(self._theta)
+        M[:3, 3]  = self._rho.to_numpy()
+        return M
 
 
 
+class SE3:
+    """ A rigid motion in 3D: an element of SE(3)
+
+        Stored as a (rotation,translation) pair (SO3, Vec3).
+
+        Acts on points by  p -> R p + t.
+    """
+    def __init__(self, R: SO3, t: Vec3):
+        self._R = R
+        self._t = t
+
+    def to_matrix(self) -> np.ndarray:
+        T = np.eye(4)
+        T[:3,:3] = self._R.to_matrix()
+        T[:3,3] = self._t.to_numpy()  # (3,) assigned into (3,1) column
+        return T
+
+    @classmethod
+    def from_matrix(cls, T: np.ndarray) -> SE3:
+        """ Constructs an element of SE(3) from a 4x4 numpy matrix
+
+            Assumes structure  T = [R,t;0,1]
+            with R : 3x3 rotation
+                 t : (3,) translation
+        """
+        return cls(SO3(T[:3, :3]), Vec3(*T[:3, 3]))
+
+    def __mul__(self, other: SE3) -> SE3:
+        # [[R1,t1],[0,1]] @ [[R2,t2],[0,1]] = [[R1R2, R1 t2 + t1],[0,1]]
+        return SE3(self._R * other._R,
+                   self._R.rotate(other._t) + self._t)
+
+    def inverse(self) -> SE3:
+        Rinv = self._R.inverse()
+        t = Vec3(*(-Rinv.to_matrix() @ self._t.to_numpy()))
+        return SE3(Rinv, t)
+
+    @classmethod   
+        #TODO I DONT LIKE EXP on not R6
+    def Exp(cls, tau: SE3Tangent) -> SE3:
+        """ Exponential map  so(3)(R^6) -> SE(3)
+
+            Takes tau = theta * u (unit axis u, angle theta = ||tau||) and returns
+            the rotation by theta around u:
+
+                R = Exp(tau) = exp(hat(tau))
+
+            with hat(tau) the skew-symmetric matrix, element of so(3), the Lie algebra of SO(3)
+
+            Closed form via (rodrigues, combined with screw integral):
+
+                [exp(tau^) , V*rho
+                       0,        1]
+
+                with exp(tau^) rodrigues formula
+                     V*rho the product of the SO(3) left jacobian and the translation part of the twist 
+
+            Inverse of Log
+        """
+        R = SO3.Exp(tau.theta)
+        V = SO3.left_jacobian(tau.theta)
+        t = V @ tau.rho.to_numpy()
+        return cls(R, Vec3(*t))
 
 
+    def Log(self) -> SE3Tangent:
+        """ Logarithmic map SE3 -> SE3Tangent (i.e. R^6)
+                         SE3 to twist vector?
 
+            Returns the twist vector
 
-
+              xi = [ rho,    =   [ V^{-1} t,
+                     tau ]         Log(R) ]
+        """
+        theta = self._R.Log()
+        Vinv = SO3.left_jacobian_inv(theta)
+        rho = Vec3(*(Vinv @ self._t.to_numpy()))
+        return SE3Tangent(rho, theta)
 
 
 
